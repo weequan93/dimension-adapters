@@ -1,115 +1,39 @@
-import request, { gql } from "graphql-request";
-import { BreakdownAdapter, Fetch, SimpleAdapter } from "../../adapters/types";
+import { BreakdownAdapter, FetchOptions, SimpleAdapter } from "../../adapters/types";
+import { getTimestampAtStartOfDayUTC } from "../../utils/date";
+import fetchURL from "../../utils/fetchURL";
 import { CHAIN } from "../../helpers/chains";
-import { getUniqStartOfTodayTimestamp } from "../../helpers/getUniSubgraphVolume";
 
-const endpoints: { [key: string]: string } = {
-    [CHAIN.DERIW]: "https://subgraph.satsuma-prod.com/3b2ced13c8d9/gmx/gmx-arbitrum-stats/api",
-}
+const basicEndpointV1 = "https://testgmxapi.weequan.cyou/client/analytic/v1/basic";
 
-const historicalDataSwap = gql`
-  query get_volume($period: String!, $id: String!) {
-    volumeStats(where: {period: $period, id: $id}) {
-        swap
-      }
-  }
-`
+const v1ChainIDs = {
+    [CHAIN.DERIW]: 44474237230
+};
 
-const historicalDataDerivatives = gql`
-  query get_volume($period: String!, $id: String!) {
-    volumeStats(where: {period: $period, id: $id}) {
-        liquidation
-        margin
-      }
-  }
-`
-const historicalOI = gql`
-  query get_trade_stats($period: String!, $id: String!) {
-    tradingStats(where: {period: $period, id: $id}) {
-      id
-      longOpenInterest
-      shortOpenInterest
-    }
-  }
-`
+const getV2Data = async (endTimestamp: number, chainId: number) => {
+    const dayTimestamp = getTimestampAtStartOfDayUTC(endTimestamp)
 
-interface IGraphResponse {
-    volumeStats: Array<{
-        burn: string,
-        liquidation: string,
-        margin: string,
-        mint: string,
-        swap: string,
-    }>
-}
-interface IGraphResponseOI {
-    tradingStats: Array<{
-        id: string,
-        longOpenInterest: string,
-        shortOpenInterest: string,
-    }>
-}
+    const basicInstance = (await fetchURL(`${basicEndpointV1}?endTimestamp=${dayTimestamp}`))
+    console.log("basicInstance", basicInstance)
 
-const getFetch = (query: string) => (chain: string): Fetch => async (timestamp: number) => {
-    const dayTimestamp = getUniqStartOfTodayTimestamp(new Date((timestamp * 1000)))
-    const dailyData: IGraphResponse = await request(endpoints[chain], query, {
-        id: chain === CHAIN.ARBITRUM
-            ? String(dayTimestamp)
-            : String(dayTimestamp) + ':daily',
-        period: 'daily',
-    })
-    const totalData: IGraphResponse = await request(endpoints[chain], query, {
-        id: 'total',
-        period: 'total',
-    })
-    let dailyOpenInterest = 0;
-    let dailyLongOpenInterest = 0;
-    let dailyShortOpenInterest = 0;
-
-    if (query === historicalDataDerivatives) {
-        const tradingStats: IGraphResponseOI = await request(endpoints[chain], historicalOI, {
-            id: chain === CHAIN.ARBITRUM
-                ? String(dayTimestamp)
-                : String(dayTimestamp) + ':daily',
-            period: 'daily',
-        });
-        dailyOpenInterest = Number(tradingStats.tradingStats[0].longOpenInterest) + Number(tradingStats.tradingStats[0].shortOpenInterest);
-        dailyLongOpenInterest = Number(tradingStats.tradingStats[0].longOpenInterest);
-        dailyShortOpenInterest = Number(tradingStats.tradingStats[0].shortOpenInterest);
-    }
 
     return {
-        timestamp: dayTimestamp,
-        dailyLongOpenInterest: dailyLongOpenInterest ? String(dailyLongOpenInterest * 10 ** -30) : undefined,
-        dailyShortOpenInterest: dailyShortOpenInterest ? String(dailyShortOpenInterest * 10 ** -30) : undefined,
-        dailyOpenInterest: dailyOpenInterest ? String(dailyOpenInterest * 10 ** -30) : undefined,
-        dailyVolume:
-            dailyData.volumeStats.length == 1
-                ? String(Number(Object.values(dailyData.volumeStats[0]).reduce((sum, element) => String(Number(sum) + Number(element)))) * 10 ** -30)
-                : undefined,
-        totalVolume:
-            totalData.volumeStats.length == 1
-                ? String(Number(Object.values(totalData.volumeStats[0]).reduce((sum, element) => String(Number(sum) + Number(element)))) * 10 ** -30)
-                : undefined,
+        totalVolume: `${basicInstance.data.volume_total}`,
+        dailyVolume: basicInstance.data.volume_day ? `${basicInstance.data.volume_day}` : '0',
+    };
+};
 
-    }
-}
-
-const startTimestamps: { [chain: string]: number } = {
-    [CHAIN.DERIW]: 1717248528,
-}
-const adapter: BreakdownAdapter = {
-    breakdown: {
-        "derivatives": Object.keys(endpoints).reduce((acc, chain) => {
-            return {
-                ...acc,
-                [chain]: {
-                    fetch: getFetch(historicalDataDerivatives)(chain),
-                    start: startTimestamps
-                }
-            }
-        }, {})
-    }
+const adapter: SimpleAdapter = {
+    version: 2,
+    adapter: 
+    Object.keys(v1ChainIDs).reduce((acc, chain) => {
+        return {
+            ...acc,
+            [chain]: {
+                fetch: async ({ startOfDay }: FetchOptions) => await getV2Data(startOfDay, v1ChainIDs[chain]),
+                start: 1717297939,
+            },
+        }
+    }, {}),
 }
 
 export default adapter;
